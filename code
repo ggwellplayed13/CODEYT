@@ -265,12 +265,18 @@ def _get_emoji_font(size: int):
     return _get_font(size)
 
 _EMOJI_RE = re.compile(
-    "[\U0001F300-\U0001FAFF"
-    "\U00002600-\U000027BF"
-    "\U0000FE00-\U0000FE0F"
-    "\u2194-\u2199"
-    "\u2300-\u23FF"
-    "\u2B00-\u2BFF"
+    # Single SMP sweep covers Enclosed Alphanumeric Supplement through
+    # Symbols and Pictographs Extended-B (includes 🅱️, regional indicators,
+    # emoticons, transport, supplemental symbols, etc.)
+    "[\U0001F100-\U0001FAFF"
+    "\u2600-\u27BF"           # Misc Symbols + Dingbats
+    "\u2300-\u23FF"           # Misc Technical
+    "\u2B00-\u2BFF"           # Misc Symbols and Arrows
+    "\uFE00-\uFE0F"           # Variation Selectors
+    "\u200D"                  # Zero-Width Joiner (ZWJ sequences: 🏴\u200D☠️)
+    "\u200C"                  # Zero-Width Non-Joiner
+    "\u20E3"                  # Combining Enclosing Keycap (1️⃣, 2️⃣ …)
+    "\u2194-\u21FF"           # Arrows
     "]+"
 )
 
@@ -3433,20 +3439,29 @@ class AudioGenerator:
 
         if dialogue_events:
             print(f"[TTS] Generating {len(dialogue_events)} contextual dialogue clips...")
-            for idx,(evt_time,evt_text) in enumerate(dialogue_events):
+            narration_busy_until=0.0
+            for idx,(evt_time,evt_text) in enumerate(sorted(dialogue_events,key=lambda x:x[0])):
+                if evt_time<narration_busy_until:
+                    print(f"[TTS] Skipping '{evt_text[:40]}' at t={evt_time:.1f}s (busy until {narration_busy_until:.1f}s)")
+                    continue
                 dlg_path=self._generate_dialogue_tts(evt_text,idx)
                 if dlg_path and os.path.exists(dlg_path):
                     try:
                         dlg_seg=AudioSegment.from_file(dlg_path)
+                        # Speed up to 1.5x via frame-rate trick — standard pydub pattern:
+                        # _spawn() retags the raw data as if it were recorded at 1.5× the
+                        # original rate; set_frame_rate() then resamples it to the target sr,
+                        # yielding audio that plays back faster (and slightly higher-pitched).
+                        dlg_seg=dlg_seg._spawn(dlg_seg.raw_data,overrides={"frame_rate":int(dlg_seg.frame_rate*1.5)})
+                        dlg_seg=dlg_seg.set_frame_rate(sr)
                         dlg_samples=np.array(dlg_seg.get_array_of_samples(),dtype=np.float64)
                         if dlg_seg.channels==2: dlg_samples=dlg_samples[::2]
                         dlg_samples=dlg_samples/32768.0*0.85
-                        if dlg_seg.frame_rate!=sr:
-                            ratio_d=sr/dlg_seg.frame_rate; new_len_d=int(len(dlg_samples)*ratio_d)
-                            dlg_samples=np.interp(np.linspace(0,len(dlg_samples)-1,new_len_d),np.arange(len(dlg_samples)),dlg_samples)
                         dlg_start=int(evt_time*sr); dlg_end=min(dlg_start+len(dlg_samples),total_samples)
                         actual_dlg=dlg_end-dlg_start
-                        if actual_dlg>0: audio[dlg_start:dlg_end]+=dlg_samples[:actual_dlg]
+                        if actual_dlg>0:
+                            audio[dlg_start:dlg_end]+=dlg_samples[:actual_dlg]
+                            narration_busy_until=evt_time+len(dlg_samples)/sr
                     except Exception as e: print(f"Warning: Dialogue TTS load failed: {e}")
 
         max_val=np.max(np.abs(audio))
@@ -4325,7 +4340,7 @@ class BallBattleRoyale:
         last_dialogue_t: float=-999.0
         _MIN_DIALOGUE_GAP=4.0
         milestone_triggered: Set[int]=set()
-        dialogue_events.append((0.5,dialogue_rng.choice(_DIALOGUE_INTRO)))
+        dialogue_events.append((0.1,dialogue_rng.choice(_DIALOGUE_INTRO)))
 
         race_duration=min(config.duration-countdown_dur-winner_dur, 50.0)
         interval=race_duration/max(1,len(selected_challenges))
