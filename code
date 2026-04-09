@@ -3047,6 +3047,98 @@ class PhysicsEngine:
 print("OK: Physics engine ready.")
 
 # ─────────────────────────────────────────────────────────────────────────────
+# DIALOGUE POOLS (contextual TTS voice narration)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_DIALOGUE_INTRO = [
+    "One hundred balls enter the arena, but only one will survive. Let the chaos begin.",
+    "Welcome to the ultimate battle royale. One hundred contestants, one winner, zero mercy.",
+    "They all think they can win. Spoiler alert: ninety-nine of them are wrong.",
+    "One hundred balls just dropped into the arena. This is about to get absolutely insane.",
+    "Only the strongest ball survives. The rest? Absolutely cooked.",
+    "One hundred enter. One leaves. This is the most intense battle you've ever seen.",
+    "Every single ball in here wants to be the last one standing. Let's see who's built different.",
+    "The arena is packed. One hundred balls. One champion. Infinite chaos.",
+    "Welcome to ball battle royale. If you blink, you'll miss an elimination.",
+    "One hundred balls are about to fight for their lives. Only one has what it takes.",
+]
+
+_DIALOGUE_MILESTONE = {
+    75: [
+        "We're down to seventy five already. That was fast.",
+        "Twenty five gone just like that. No mercy in this arena.",
+        "Seventy five remain. The battle is just getting started.",
+        "Already down to seventy five. This arena is ruthless.",
+        "Quarter of the field eliminated. Seventy five balls still fighting.",
+    ],
+    50: [
+        "Half of them are gone. Fifty balls remain.",
+        "We've hit the halfway point. Things are getting serious.",
+        "Fifty balls left. This is where it gets real.",
+        "Half the field wiped out. The competition is heating up.",
+        "Fifty remain. The chaos is just getting started.",
+    ],
+    30: [
+        "Just thirty left. The pressure is real.",
+        "Seventy balls eliminated. These survivors are built different.",
+        "Thirty remain and every one of them is hungry for the win.",
+        "We're down to thirty. The arena is starting to clear out.",
+        "Only thirty balls left in the fight. Things are getting intense.",
+    ],
+    20: [
+        "Only twenty remain. This is getting interesting.",
+        "Twenty left and every single one of them is fighting for their life.",
+        "Top twenty. The competition is absolutely brutal right now.",
+        "We're in the final twenty. Every elimination matters.",
+        "Twenty balls. One dream. This is chaos.",
+    ],
+    10: [
+        "We're in the top ten. This is where legends are made.",
+        "Just ten balls left. Who's going to choke?",
+        "Top ten. Every move could be the last.",
+        "Ten remain. The tension is unbearable.",
+        "We're down to ten. One of these balls is about to become a legend.",
+    ],
+    5: [
+        "Five left. This is the endgame.",
+        "The final five. Every move matters now.",
+        "Five balls remain. The end is near.",
+        "Only five left standing. This is insane.",
+        "Final five. Someone is about to secure the bag.",
+    ],
+    3: [
+        "Three remain. One of them is about to become a legend.",
+        "The final three. My heart can't take this.",
+        "Three balls left. The finale is here.",
+    ],
+    2: [
+        "It's a one v one. The ultimate showdown.",
+        "Two balls. One spot. This is it.",
+        "Final two. Only one survives.",
+    ],
+}
+
+_DIALOGUE_SHOCKWAVE = [
+    "Oh my god, that shockwave just wiped out half the lobby!",
+    "Absolutely devastating. Multiple eliminations in one hit.",
+    "That's insane! A massive wave just cleared the field!",
+    "The shockwave strikes! Multiple balls down!",
+    "Chaos! Multiple eliminations at once!",
+]
+
+_DIALOGUE_ELIMINATION = [
+    "And another one bites the dust.",
+    "Gone. Reduced to atoms.",
+    "That one didn't even see it coming.",
+    "Eliminated! No survivors in this arena.",
+    "Out of here! This battle is ruthless.",
+    "Another ball hits the floor.",
+    "No mercy. Just pure chaos.",
+]
+
+print("OK: Dialogue pools ready (intro x10, milestones x8, shockwave x5, elimination x7).")
+
+# ─────────────────────────────────────────────────────────────────────────────
 # AUDIO GENERATOR
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -3257,7 +3349,7 @@ class AudioGenerator:
         print("[SONG] Original Beat 🥁 — classic 165 BPM procedural kick/snare")
 
     def generate(self, total_duration, winner_name, countdown_dur,
-                 death_times, challenge_times, winner_time=None):
+                 death_times, challenge_times, winner_time=None, dialogue_events=None):
         sr=44100; total_samples=int(total_duration*sr)
         audio=np.zeros(total_samples,dtype=np.float64)
         rng_audio=np.random.default_rng(hash(self.config.seed)%(2**31))
@@ -3339,6 +3431,24 @@ class AudioGenerator:
                 if actual_tts>0: audio[tts_start:tts_end]+=tts_samples[:actual_tts]
             except Exception as e: print(f"Warning: TTS load failed: {e}")
 
+        if dialogue_events:
+            print(f"[TTS] Generating {len(dialogue_events)} contextual dialogue clips...")
+            for idx,(evt_time,evt_text) in enumerate(dialogue_events):
+                dlg_path=self._generate_dialogue_tts(evt_text,idx)
+                if dlg_path and os.path.exists(dlg_path):
+                    try:
+                        dlg_seg=AudioSegment.from_file(dlg_path)
+                        dlg_samples=np.array(dlg_seg.get_array_of_samples(),dtype=np.float64)
+                        if dlg_seg.channels==2: dlg_samples=dlg_samples[::2]
+                        dlg_samples=dlg_samples/32768.0*0.85
+                        if dlg_seg.frame_rate!=sr:
+                            ratio_d=sr/dlg_seg.frame_rate; new_len_d=int(len(dlg_samples)*ratio_d)
+                            dlg_samples=np.interp(np.linspace(0,len(dlg_samples)-1,new_len_d),np.arange(len(dlg_samples)),dlg_samples)
+                        dlg_start=int(evt_time*sr); dlg_end=min(dlg_start+len(dlg_samples),total_samples)
+                        actual_dlg=dlg_end-dlg_start
+                        if actual_dlg>0: audio[dlg_start:dlg_end]+=dlg_samples[:actual_dlg]
+                    except Exception as e: print(f"Warning: Dialogue TTS load failed: {e}")
+
         max_val=np.max(np.abs(audio))
         if max_val>0: audio=audio/max_val*0.80
         audio_int16=(audio*32767).astype(np.int16)
@@ -3365,6 +3475,12 @@ class AudioGenerator:
             tts=gTTS(text=f"{name} wins! Last ball standing!",lang='en',slow=False)
             path=os.path.join(self.temp_dir,"winner_tts.mp3"); tts.save(path); return path
         except Exception as e: print(f"Warning: TTS failed: {e}"); return None
+
+    def _generate_dialogue_tts(self, text, idx):
+        try:
+            tts=gTTS(text=text,lang='en',slow=False)
+            path=os.path.join(self.temp_dir,f"dialogue_{idx}.mp3"); tts.save(path); return path
+        except Exception as e: print(f"Warning: Dialogue TTS failed: {e}"); return None
 
     def cleanup(self):
         for f in glob.glob(os.path.join(self.temp_dir,"*")):
@@ -4204,6 +4320,12 @@ class BallBattleRoyale:
         forced_kill_timer=0
         death_times: List[float]=[]
         challenge_times: List[float]=[]
+        dialogue_events: List[Tuple[float,str]]=[]
+        dialogue_rng=random.Random((config.seed or 0)+777)
+        last_dialogue_t: float=-999.0
+        _MIN_DIALOGUE_GAP=4.0
+        milestone_triggered: Set[int]=set()
+        dialogue_events.append((0.5,dialogue_rng.choice(_DIALOGUE_INTRO)))
 
         race_duration=min(config.duration-countdown_dur-winner_dur, 50.0)
         interval=race_duration/max(1,len(selected_challenges))
@@ -4306,6 +4428,20 @@ class BallBattleRoyale:
                     forced_kill_timer=0
 
                 alive_now=sum(1 for b in balls if b.alive)
+                _dlg_fired=False
+                for _ms in sorted(_DIALOGUE_MILESTONE.keys(), reverse=True):
+                    if alive_now<=_ms and _ms not in milestone_triggered:
+                        milestone_triggered.add(_ms)
+                        if t-last_dialogue_t>=_MIN_DIALOGUE_GAP and not _dlg_fired:
+                            dialogue_events.append((t,dialogue_rng.choice(_DIALOGUE_MILESTONE[_ms])))
+                            last_dialogue_t=t; _dlg_fired=True
+                if not _dlg_fired:
+                    if kill_count_this_frame>=3 and t-last_dialogue_t>=_MIN_DIALOGUE_GAP:
+                        dialogue_events.append((t,dialogue_rng.choice(_DIALOGUE_SHOCKWAVE)))
+                        last_dialogue_t=t
+                    elif 0<kill_count_this_frame<3 and dialogue_rng.random()<0.25 and t-last_dialogue_t>=_MIN_DIALOGUE_GAP:
+                        dialogue_events.append((t,dialogue_rng.choice(_DIALOGUE_ELIMINATION)))
+                        last_dialogue_t=t
                 if alive_now<=1 and winner is None:
                     alive_list=[b for b in balls if b.alive]
                     if alive_list: winner=alive_list[0]
@@ -4349,7 +4485,8 @@ class BallBattleRoyale:
         print("Generating audio...")
         audio_gen=AudioGenerator(config)
         audio_path=audio_gen.generate(actual_duration,winner.name,countdown_dur,
-                                      death_times,challenge_times,winner_time)
+                                      death_times,challenge_times,winner_time,
+                                      dialogue_events)
 
         print("Encoding video...")
         frame_cache: Dict[int,np.ndarray]={}; cache_limit=3
